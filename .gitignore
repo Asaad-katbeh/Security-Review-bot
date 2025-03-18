@@ -10,6 +10,19 @@ lerna-debug.log*
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
+# Node.js dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Keep .github folder tracked
+!.github
+!.github/** 
+
 # Runtime data
 pids
 *.pid
