@@ -1,0 +1,113 @@
+# GitHub Actions workflow for automated security review of pull requests
+# This workflow runs security analysis on code changes and provides feedback through PR comments
+
+name: Security Review Bot
+
+# Trigger conditions for the workflow
+on:
+  # Run when pull requests are created or updated
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # Run when comments are added (for handling false positive marks)
+  issue_comment:
+    types: [created]
+
+# Add top-level permissions to ensure they are properly set
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+  checks: write
+
+jobs:
+  # Main security review job
+  security-review:
+    name: Security Review
+    runs-on: ubuntu-latest
+
+    # Environment variables available to all steps
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # For GitHub API access
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} # For AI-powered analysis
+      NODE_VERSION: "18" # Node.js version to use
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history needed for accurate diff analysis
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 2: Set up Node.js environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Step 3: Install project dependencies
+      - name: Install dependencies
+        working-directory: security-bot
+        run: |
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      # Step 4: Run the security analysis
+      - name: Run security review
+        id: security-review
+        working-directory: security-bot
+        run: node src/index.js
+        env:
+          # Pass through required GitHub context
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_ACTIONS: true
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CONFIG_PATH: config/securitybot-config.yml
+        continue-on-error: false # Fail the workflow if security issues are found
+
+      # Step 5: Report analysis results using checks API instead of statuses
+      - name: Report status
+        if: always() # Run this step regardless of previous step outcomes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const conclusion = process.env.GITHUB_STEP_SUMMARY.includes('Security vulnerabilities detected') ? 'failure' : 'success';
+            const { data: checkRun } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Security Review',
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: {
+                title: 'Security Review Results',
+                summary: conclusion === 'success'
+                  ? '✅ No security vulnerabilities found.'
+                  : '❌ Security vulnerabilities detected. Please review the findings.'
+              }
+            });
+
+      # Step 6: Save log files as artifacts
+      - name: Upload logs
+        if: always() # Always upload logs for debugging
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-review-logs
+          path: security-bot/*.log
+          retention-days: 7 # Keep logs for 7 days
+
+      # Step 7: Clean up temporary files
+      - name: Cleanup
+        if: always() # Always perform cleanup
+        run: |
+          # Remove log files
+          rm -f security-bot/*.log
+          rm -f security-bot/error.log
+          # Remove node_modules to reduce storage usage
+          rm -rf security-bot/node_modules
